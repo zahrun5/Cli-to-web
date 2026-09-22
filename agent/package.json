@@ -1,0 +1,13 @@
+{
+  "name": "cliweb-agent",
+  "version": "1.0.0",
+  "description": "CLI-to-Web Agent — runs on home server, connects to relay",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "node-pty": "^1.0.0"
+  }
+}

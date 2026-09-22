@@ -1,0 +1,16 @@
+[Unit]
+Description=CLI-to-Web Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=harun
+ExecStart=/usr/bin/node /home/harun/cli-to-web/agent/agent.js
+WorkingDirectory=/home/harun/cli-to-web/agent
+EnvironmentFile=/home/harun/cli-to-web/agent/.env
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

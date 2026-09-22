@@ -1,0 +1,9 @@
+# Caddy reverse proxy for CLI-to-Web Relay Server
+# Place this in /etc/caddy/Caddyfile or include it
+
+terminal.yourdomain.com {
+    reverse_proxy localhost:3100
+
+    # WebSocket support is automatic in Caddy
+    # TLS is automatic via Let's Encrypt
+}
