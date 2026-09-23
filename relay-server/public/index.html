@@ -2,16 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, interactive-widget=resizes-content">
   <title>CLI-to-Web Terminal</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #1a1b26; color: #c0caf5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; max-height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+    html { height: 100%; overscroll-behavior: none; }
+
+    /* Body dikunci ke area yang benar-benar kelihatan (di atas keyboard HP).
+       Tinggi & posisinya di-update JS dari visualViewport. */
+    body {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+      overscroll-behavior: none;
+      display: flex;
+      flex-direction: column;
+      background: #1a1b26;
+      color: #c0caf5;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
 
     /* ── Login ── */
-    #login-screen { display: flex; align-items: center; justify-content: center; height: 100vh; }
-    .login-box { background: #24283b; border: 1px solid #3b4261; border-radius: 12px; padding: 2rem; width: 360px; }
+    #login-screen { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 0; }
+    .login-box { background: #24283b; border: 1px solid #3b4261; border-radius: 12px; padding: 2rem; width: min(360px, 92vw); }
     .login-box h1 { font-size: 1.4rem; margin-bottom: 0.5rem; color: #7aa2f7; }
     .login-box p { font-size: 0.85rem; color: #565f89; margin-bottom: 1.5rem; }
     .login-box input { width: 100%; padding: 0.6rem 0.8rem; background: #1a1b26; border: 1px solid #3b4261; border-radius: 6px; color: #c0caf5; font-size: 0.9rem; margin-bottom: 0.8rem; outline: none; }
@@ -21,14 +37,16 @@
     .login-error { color: #f7768e; font-size: 0.8rem; margin-bottom: 0.5rem; display: none; }
 
     /* ── Dashboard ── */
-    #dashboard { display: none; flex-direction: column; height: 100vh; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0.8rem 1.2rem; background: #24283b; border-bottom: 1px solid #3b4261; }
+    #dashboard { display: none; flex-direction: column; flex: 1; min-height: 0; }
+    /* Pas di mode terminal, topbar dashboard disembunyikan biar ruang layar lebih lega */
+    #dashboard.in-terminal > .topbar { display: none; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 0.8rem 1.2rem; background: #24283b; border-bottom: 1px solid #3b4261; flex-shrink: 0; }
     .topbar h2 { font-size: 1rem; color: #7aa2f7; }
     .topbar button { background: none; border: 1px solid #3b4261; color: #565f89; padding: 0.3rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
     .topbar button:hover { color: #c0caf5; border-color: #565f89; }
 
     /* ── Agent List ── */
-    #agent-list-view { flex: 1; padding: 1.5rem; overflow-y: auto; }
+    #agent-list-view { flex: 1; min-height: 0; padding: 1.5rem; overflow-y: auto; }
     #agent-list-view h3 { color: #565f89; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1rem; }
     .agent-card { background: #24283b; border: 1px solid #3b4261; border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 0.6rem; display: flex; align-items: center; justify-content: space-between; cursor: pointer; transition: border-color 0.15s; }
     .agent-card:hover { border-color: #7aa2f7; }
@@ -40,30 +58,33 @@
     .no-agents { color: #565f89; text-align: center; padding: 3rem; }
 
     /* ── Terminal ── */
-    #terminal-view { display: none; flex: 1; flex-direction: column; }
-    .terminal-topbar { display: flex; align-items: center; gap: 0.8rem; padding: 0.5rem 1rem; background: #24283b; border-bottom: 1px solid #3b4261; }
+    #terminal-view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+    .terminal-topbar { display: flex; align-items: center; gap: 0.8rem; padding: 0.5rem 1rem; background: #24283b; border-bottom: 1px solid #3b4261; flex-shrink: 0; }
     .terminal-topbar button { background: none; border: 1px solid #3b4261; color: #c0caf5; padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
     .terminal-topbar button:hover { border-color: #7aa2f7; color: #7aa2f7; }
-    .terminal-topbar span { font-family: monospace; font-size: 0.85rem; color: #9ece6a; }
-    #terminal-container { flex: 1 1 auto; padding: 4px; min-height: 0; overflow: hidden; }
+    .terminal-topbar span { font-family: monospace; font-size: 0.85rem; color: #9ece6a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    /* ── Key Toolbar ── */
+    /* Area terminal makan semua sisa ruang; touch-action none = scroll disetir JS (ada inertia) */
+    #terminal-container {
+      flex: 1 1 0;
+      min-height: 0;
+      padding: 4px;
+      overflow: hidden;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
+
+    /* ── Key Toolbar ── (ikut alur layout, bukan fixed → tidak pernah nutupin terminal) */
     #key-toolbar {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      flex-shrink: 0;
       display: flex;
       gap: 6px;
-      padding: 6px 8px;
+      padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
       background: #24283b;
       border-top: 1px solid #3b4261;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
-      flex-shrink: 0;
       scrollbar-width: none;
-      z-index: 100;
-      transition: transform 0.15s ease-out;
     }
     #key-toolbar::-webkit-scrollbar { display: none; }
     #key-toolbar button {
@@ -77,6 +98,7 @@
       font-size: 0.85rem;
       font-family: 'JetBrains Mono', 'Fira Code', monospace;
       cursor: pointer;
+      touch-action: manipulation;
       -webkit-tap-highlight-color: transparent;
     }
     #key-toolbar button:active { background: #33467c; }
@@ -165,12 +187,19 @@
     let currentTerm = null;
     let fitAddon = null;
     let ctrlArmed = false;
+    let resizeObserver = null;
+    let detachTouch = null;
+
+    // ── Kirim input ke shell ──
+    function sendInput(data) {
+      if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+        currentWs.send(JSON.stringify({ type: 'input', data }));
+      }
+    }
 
     // ── Key Toolbar ──
     function sendKey(seq) {
-      if (currentWs && currentWs.readyState === WebSocket.OPEN) {
-        currentWs.send(JSON.stringify({ type: 'input', data: seq }));
-      }
+      sendInput(seq);
       if (currentTerm) currentTerm.focus();
     }
 
@@ -193,35 +222,138 @@
       return ch;
     }
 
-    // ── Mobile keyboard detection ──
-    // When the OS keyboard appears, visualViewport shrinks. We lift the toolbar
-    // above it so the buttons stay tappable.
-    function updateToolbarForKeyboard() {
-      const toolbar = document.getElementById('key-toolbar');
-      if (!toolbar) return;
+    // Tap tombol toolbar jangan sampai ngerebut fokus dari terminal,
+    // kalau tidak keyboard HP nutup-buka sendiri.
+    document.getElementById('key-toolbar').addEventListener('mousedown', (e) => e.preventDefault());
 
-      let keyboardHeight = 0;
-      if (window.visualViewport) {
-        // Difference between layout viewport and visual viewport = keyboard height
-        keyboardHeight = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+    // ── Layout mengikuti area yang kelihatan (keyboard HP) ──
+    let fitRaf = 0;
+    function scheduleFit() {
+      if (fitRaf) return;
+      fitRaf = requestAnimationFrame(() => {
+        fitRaf = 0;
+        if (!fitAddon || !currentTerm) return;
+        const c = document.getElementById('terminal-container');
+        if (!c || !c.clientHeight) return;
+        const buf = currentTerm.buffer.active;
+        const atBottom = buf.viewportY >= buf.baseY;
+        try { fitAddon.fit(); } catch {}
+        // Kalau tadinya di paling bawah, tetap di bawah supaya baris input kelihatan
+        if (atBottom) currentTerm.scrollToBottom();
+      });
+    }
+
+    function syncViewport() {
+      const vv = window.visualViewport;
+      if (vv && Math.abs(vv.scale - 1) < 0.01) {
+        document.body.style.height = vv.height + 'px';
+        document.body.style.top = vv.offsetTop + 'px';
       }
-
-      if (keyboardHeight > 100) {
-        // Keyboard is open — shift toolbar up
-        toolbar.style.transform = `translateY(-${keyboardHeight}px)`;
-      } else {
-        toolbar.style.transform = 'translateY(0)';
-      }
-
-      // Also keep terminal bottom edge above the keyboard
-      if (fitAddon) fitAddon.fit();
+      scheduleFit();
     }
 
     if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', updateToolbarForKeyboard);
-      window.visualViewport.addEventListener('scroll', updateToolbarForKeyboard);
+      window.visualViewport.addEventListener('resize', syncViewport);
+      window.visualViewport.addEventListener('scroll', syncViewport);
     }
-    window.addEventListener('resize', updateToolbarForKeyboard);
+    window.addEventListener('resize', syncViewport);
+    window.addEventListener('orientationchange', syncViewport);
+    syncViewport();
+
+    // ── Scroll sentuh dengan inertia (pengganti scroll bawaan xterm yang patah-patah) ──
+    function attachTouchScroll(term, container) {
+      const st = { active: false, moved: false, startY: 0, lastY: 0, lastT: 0, v: 0, acc: 0, raf: 0 };
+
+      function lineHeight() {
+        const screen = container.querySelector('.xterm-screen');
+        const h = screen ? screen.clientHeight : 0;
+        return (h && term.rows) ? h / term.rows : 17;
+      }
+
+      function scrollByPixels(dy) {
+        st.acc += -dy / lineHeight();
+        const n = Math.trunc(st.acc);
+        if (!n) return;
+        st.acc -= n;
+        if (term.buffer.active.type === 'alternate') {
+          // Aplikasi layar penuh (vim, htop, less): terjemahkan ke tombol panah
+          const app = term.modes && term.modes.applicationCursorKeysMode;
+          const seq = n > 0 ? (app ? '\x1bOB' : '\x1b[B') : (app ? '\x1bOA' : '\x1b[A');
+          sendInput(seq.repeat(Math.min(Math.abs(n), 5)));
+        } else {
+          term.scrollLines(n);
+        }
+      }
+
+      function stopFling() {
+        if (st.raf) { cancelAnimationFrame(st.raf); st.raf = 0; }
+      }
+
+      function onStart(e) {
+        if (e.touches.length !== 1) { st.active = false; return; }
+        e.stopPropagation();
+        stopFling();
+        const t = e.touches[0];
+        st.active = true;
+        st.moved = false;
+        st.startY = st.lastY = t.clientY;
+        st.lastT = performance.now();
+        st.v = 0;
+        st.acc = 0;
+      }
+
+      function onMove(e) {
+        if (!st.active) return;
+        if (e.touches.length !== 1) { st.active = false; return; }
+        e.stopPropagation();
+        e.preventDefault();
+        const t = e.touches[0];
+        if (!st.moved && Math.abs(t.clientY - st.startY) < 6) return; // masih dianggap tap
+        st.moved = true;
+        const now = performance.now();
+        const dy = t.clientY - st.lastY;
+        const dt = Math.max(1, now - st.lastT);
+        st.v = 0.7 * st.v + 0.3 * (dy / dt);
+        st.lastY = t.clientY;
+        st.lastT = now;
+        scrollByPixels(dy);
+      }
+
+      function onEnd(e) {
+        if (!st.active) return;
+        e.stopPropagation();
+        st.active = false;
+        if (!st.moved) return;
+        if (performance.now() - st.lastT > 80) return; // jari berhenti dulu → tanpa fling
+        let last = performance.now();
+        const tick = (now) => {
+          const dt = now - last;
+          last = now;
+          scrollByPixels(st.v * dt);
+          st.v *= Math.pow(0.996, dt);
+          st.raf = Math.abs(st.v) > 0.02 ? requestAnimationFrame(tick) : 0;
+        };
+        st.raf = requestAnimationFrame(tick);
+      }
+
+      // Tap biasa = munculkan keyboard
+      const onClick = () => term.focus();
+
+      container.addEventListener('touchstart', onStart, { capture: true, passive: true });
+      container.addEventListener('touchmove', onMove, { capture: true, passive: false });
+      container.addEventListener('touchend', onEnd, { capture: true, passive: true });
+      container.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
+      container.addEventListener('click', onClick);
+
+      return () => {
+        stopFling();
+        container.removeEventListener('touchstart', onStart, { capture: true });
+        container.removeEventListener('touchmove', onMove, { capture: true });
+        container.removeEventListener('touchend', onEnd, { capture: true });
+        container.removeEventListener('touchcancel', onEnd, { capture: true });
+        container.removeEventListener('click', onClick);
+      };
+    }
 
     // ── Login ──
     async function doLogin() {
@@ -257,6 +389,9 @@
     async function doLogout() {
       await fetch('/api/logout', { method: 'POST' });
       closeTerminal();
+      document.getElementById('terminal-view').style.display = 'none';
+      document.getElementById('agent-list-view').style.display = 'block';
+      document.getElementById('dashboard').classList.remove('in-terminal');
       document.getElementById('dashboard').style.display = 'none';
       document.getElementById('login-screen').style.display = 'flex';
     }
@@ -304,14 +439,19 @@
 
     // ── Terminal ──
     function openTerminal(agentId, agentName) {
+      closeTerminal(); // pastikan sisa sesi lama bersih
+
       document.getElementById('agent-list-view').style.display = 'none';
       document.getElementById('terminal-view').style.display = 'flex';
+      document.getElementById('dashboard').classList.add('in-terminal');
       document.getElementById('terminal-agent-name').textContent = `${agentName} (${agentId})`;
 
       // Create xterm instance
       currentTerm = new Terminal({
         cursorBlink: true,
         fontSize: 14,
+        scrollback: 5000,
+        smoothScrollDuration: 0,
         fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
         theme: {
           background: '#1a1b26',
@@ -335,63 +475,72 @@
       currentTerm.open(container);
       fitAddon.fit();
 
+      // Scroll sentuh + tap-to-focus
+      detachTouch = attachTouchScroll(currentTerm, container);
+
+      // Setiap ukuran area terminal berubah (keyboard, toolbar, rotasi) → fit ulang
+      resizeObserver = new ResizeObserver(() => scheduleFit());
+      resizeObserver.observe(container);
+
       // Connect WebSocket
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      currentWs = new WebSocket(`${proto}//${location.host}/ws/terminal?agentId=${agentId}`);
+      const ws = new WebSocket(`${proto}//${location.host}/ws/terminal?agentId=${agentId}`);
+      currentWs = ws;
+      const term = currentTerm;
 
-      currentWs.onopen = () => {
-        currentTerm.writeln('\x1b[32m● Connected to agent\x1b[0m\r');
+      ws.onopen = () => {
+        term.writeln('\x1b[32m● Connected to agent\x1b[0m\r');
         // Send initial terminal size
-        currentWs.send(JSON.stringify({
+        ws.send(JSON.stringify({
           type: 'resize',
-          cols: currentTerm.cols,
-          rows: currentTerm.rows
+          cols: term.cols,
+          rows: term.rows
         }));
       };
 
-      currentWs.onmessage = (evt) => {
+      ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(evt.data);
           if (msg.type === 'output') {
-            currentTerm.write(msg.data);
+            term.write(msg.data);
           } else if (msg.type === 'exit') {
-            currentTerm.writeln('\r\n\x1b[31m● Shell exited\x1b[0m');
+            term.writeln('\r\n\x1b[31m● Shell exited\x1b[0m');
           } else if (msg.type === 'agent-disconnected') {
-            currentTerm.writeln('\r\n\x1b[31m● Agent disconnected\x1b[0m');
+            term.writeln('\r\n\x1b[31m● Agent disconnected\x1b[0m');
           }
         } catch {}
       };
 
-      currentWs.onclose = () => {
-        currentTerm.writeln('\r\n\x1b[33m● Connection closed\x1b[0m');
+      ws.onclose = () => {
+        term.writeln('\r\n\x1b[33m● Connection closed\x1b[0m');
       };
 
-      currentWs.onerror = () => {
-        currentTerm.writeln('\r\n\x1b[31m● Connection error\x1b[0m');
+      ws.onerror = () => {
+        term.writeln('\r\n\x1b[31m● Connection error\x1b[0m');
       };
 
       // Send keystrokes
-      currentTerm.onData((data) => {
+      term.onData((data) => {
         if (ctrlArmed && data.length === 1) {
           data = toCtrlCode(data);
           setCtrlArmed(false);
         }
-        if (currentWs && currentWs.readyState === WebSocket.OPEN) {
-          currentWs.send(JSON.stringify({ type: 'input', data }));
-        }
+        sendInput(data);
       });
 
       // Handle resize
-      currentTerm.onResize(({ cols, rows }) => {
-        if (currentWs && currentWs.readyState === WebSocket.OPEN) {
-          currentWs.send(JSON.stringify({ type: 'resize', cols, rows }));
+      term.onResize(({ cols, rows }) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols, rows }));
         }
       });
 
-      window.addEventListener('resize', () => { if (fitAddon) fitAddon.fit(); });
+      scheduleFit();
     }
 
     function closeTerminal() {
+      if (detachTouch) { detachTouch(); detachTouch = null; }
+      if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
       if (currentWs) { currentWs.close(); currentWs = null; }
       if (currentTerm) { currentTerm.dispose(); currentTerm = null; }
       fitAddon = null;
@@ -401,6 +550,7 @@
     function backToList() {
       closeTerminal();
       document.getElementById('terminal-view').style.display = 'none';
+      document.getElementById('dashboard').classList.remove('in-terminal');
       document.getElementById('agent-list-view').style.display = 'block';
       refreshAgents();
     }
