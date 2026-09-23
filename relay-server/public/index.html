@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #1a1b26; color: #c0caf5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
+    body { background: #1a1b26; color: #c0caf5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; max-height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
 
     /* ── Login ── */
     #login-screen { display: flex; align-items: center; justify-content: center; height: 100vh; }
@@ -45,7 +45,52 @@
     .terminal-topbar button { background: none; border: 1px solid #3b4261; color: #c0caf5; padding: 0.25rem 0.6rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
     .terminal-topbar button:hover { border-color: #7aa2f7; color: #7aa2f7; }
     .terminal-topbar span { font-family: monospace; font-size: 0.85rem; color: #9ece6a; }
-    #terminal-container { flex: 1; padding: 4px; }
+    #terminal-container { flex: 1 1 auto; padding: 4px; min-height: 0; overflow: hidden; }
+
+    /* ── Key Toolbar ── */
+    #key-toolbar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      gap: 6px;
+      padding: 6px 8px;
+      background: #24283b;
+      border-top: 1px solid #3b4261;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      flex-shrink: 0;
+      scrollbar-width: none;
+      z-index: 100;
+      transition: transform 0.15s ease-out;
+    }
+    #key-toolbar::-webkit-scrollbar { display: none; }
+    #key-toolbar button {
+      flex-shrink: 0;
+      min-width: 42px;
+      padding: 0.5rem 0.7rem;
+      background: #1a1b26;
+      border: 1px solid #3b4261;
+      color: #c0caf5;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #key-toolbar button:active { background: #33467c; }
+    #key-toolbar button.active {
+      background: #7aa2f7;
+      color: #1a1b26;
+      border-color: #7aa2f7;
+    }
+    #key-toolbar .divider {
+      width: 1px;
+      flex-shrink: 0;
+      background: #3b4261;
+      margin: 2px 2px;
+    }
   </style>
 </head>
 <body>
@@ -85,6 +130,28 @@
         <span id="terminal-agent-name"></span>
       </div>
       <div id="terminal-container"></div>
+      <div id="key-toolbar">
+        <button id="ctrl-key" onclick="toggleCtrl()">Ctrl</button>
+        <button onclick="sendKey('\x1b')">Esc</button>
+        <button onclick="sendKey('\t')">Tab</button>
+        <div class="divider"></div>
+        <button onclick="sendKey('\x1b[A')">↑</button>
+        <button onclick="sendKey('\x1b[B')">↓</button>
+        <button onclick="sendKey('\x1b[D')">←</button>
+        <button onclick="sendKey('\x1b[C')">→</button>
+        <div class="divider"></div>
+        <button onclick="sendKey('\x1b[H')">Home</button>
+        <button onclick="sendKey('\x1b[F')">End</button>
+        <button onclick="sendKey('\x1b[5~')">PgUp</button>
+        <button onclick="sendKey('\x1b[6~')">PgDn</button>
+        <div class="divider"></div>
+        <button onclick="sendKey('\x03')">^C</button>
+        <button onclick="sendKey('\x04')">^D</button>
+        <button onclick="sendKey('\x1a')">^Z</button>
+        <button onclick="sendKey('\x0c')">^L</button>
+        <button onclick="sendKey('\x12')">^R</button>
+        <button onclick="sendKey('\x15')">^U</button>
+      </div>
     </div>
   </div>
 
@@ -97,6 +164,64 @@
     let currentWs = null;
     let currentTerm = null;
     let fitAddon = null;
+    let ctrlArmed = false;
+
+    // ── Key Toolbar ──
+    function sendKey(seq) {
+      if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+        currentWs.send(JSON.stringify({ type: 'input', data: seq }));
+      }
+      if (currentTerm) currentTerm.focus();
+    }
+
+    function setCtrlArmed(state) {
+      ctrlArmed = state;
+      const btn = document.getElementById('ctrl-key');
+      if (btn) btn.classList.toggle('active', ctrlArmed);
+    }
+
+    function toggleCtrl() {
+      setCtrlArmed(!ctrlArmed);
+      if (currentTerm) currentTerm.focus();
+    }
+
+    function toCtrlCode(ch) {
+      const code = ch.toUpperCase().charCodeAt(0);
+      if (code >= 64 && code <= 95) {
+        return String.fromCharCode(code - 64);
+      }
+      return ch;
+    }
+
+    // ── Mobile keyboard detection ──
+    // When the OS keyboard appears, visualViewport shrinks. We lift the toolbar
+    // above it so the buttons stay tappable.
+    function updateToolbarForKeyboard() {
+      const toolbar = document.getElementById('key-toolbar');
+      if (!toolbar) return;
+
+      let keyboardHeight = 0;
+      if (window.visualViewport) {
+        // Difference between layout viewport and visual viewport = keyboard height
+        keyboardHeight = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+      }
+
+      if (keyboardHeight > 100) {
+        // Keyboard is open — shift toolbar up
+        toolbar.style.transform = `translateY(-${keyboardHeight}px)`;
+      } else {
+        toolbar.style.transform = 'translateY(0)';
+      }
+
+      // Also keep terminal bottom edge above the keyboard
+      if (fitAddon) fitAddon.fit();
+    }
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', updateToolbarForKeyboard);
+      window.visualViewport.addEventListener('scroll', updateToolbarForKeyboard);
+    }
+    window.addEventListener('resize', updateToolbarForKeyboard);
 
     // ── Login ──
     async function doLogin() {
@@ -247,6 +372,10 @@
 
       // Send keystrokes
       currentTerm.onData((data) => {
+        if (ctrlArmed && data.length === 1) {
+          data = toCtrlCode(data);
+          setCtrlArmed(false);
+        }
         if (currentWs && currentWs.readyState === WebSocket.OPEN) {
           currentWs.send(JSON.stringify({ type: 'input', data }));
         }
@@ -266,6 +395,7 @@
       if (currentWs) { currentWs.close(); currentWs = null; }
       if (currentTerm) { currentTerm.dispose(); currentTerm = null; }
       fitAddon = null;
+      setCtrlArmed(false);
     }
 
     function backToList() {
