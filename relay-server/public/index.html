@@ -72,7 +72,31 @@
       overflow: hidden;
       touch-action: none;
       overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
+    /* Kotak input tersembunyi milik xterm tetap boleh menerima ketikan */
+    #terminal-container .xterm-helper-textarea { -webkit-user-select: text; user-select: text; }
+
+    /* Toast kecil (mis. "Tersalin") */
+    #toast {
+      position: absolute;
+      left: 50%;
+      bottom: 72px;
+      transform: translateX(-50%);
+      background: #33467c;
+      color: #c0caf5;
+      padding: 0.45rem 0.9rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s;
+      z-index: 10;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; }
 
     /* ── Key Toolbar ── (ikut alur layout, bukan fixed → tidak pernah nutupin terminal) */
     #key-toolbar {
@@ -153,6 +177,8 @@
       </div>
       <div id="terminal-container"></div>
       <div id="key-toolbar">
+        <button id="copy-key" onclick="copySelection()">Copy</button>
+        <div class="divider"></div>
         <button id="ctrl-key" onclick="toggleCtrl()">Ctrl</button>
         <button onclick="sendKey('\x1b')">Esc</button>
         <button onclick="sendKey('\t')">Tab</button>
@@ -176,6 +202,8 @@
       </div>
     </div>
   </div>
+
+  <div id="toast"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
@@ -260,16 +288,78 @@
     window.addEventListener('orientationchange', syncViewport);
     syncViewport();
 
-    // ── Scroll sentuh dengan inertia (pengganti scroll bawaan xterm yang patah-patah) ──
-    function attachTouchScroll(term, container) {
-      const st = { active: false, moved: false, startY: 0, lastY: 0, lastT: 0, v: 0, acc: 0, raf: 0 };
+    // ── Toast & Copy ──
+    let toastTimer = 0;
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 1400);
+    }
 
-      function lineHeight() {
+    async function copyText(text) {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch {}
+      // Cadangan kalau Clipboard API ditolak
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.readOnly = true;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+
+    async function copySelection() {
+      if (!currentTerm || !currentTerm.hasSelection()) {
+        showToast('Belum ada teks yang dipilih');
+        return;
+      }
+      const ok = await copyText(currentTerm.getSelection());
+      if (ok) {
+        currentTerm.clearSelection();
+        showToast('Tersalin ✓');
+      } else {
+        showToast('Gagal menyalin');
+      }
+    }
+
+    // ── Sentuh: scroll (inertia) + pilih teks (tahan lama lalu geser) ──
+    function attachTouchScroll(term, container) {
+      const SLOP = 8;             // px, batas antara "tap/tahan" dan "geser"
+      const LONG_PRESS_MS = 450;  // tahan selama ini → mulai pilih teks
+      const EDGE = 36;            // px dari tepi atas/bawah → auto-scroll saat memilih
+      const st = {
+        active: false, moved: false, selecting: false,
+        startX: 0, startY: 0, lastY: 0, curX: 0, curY: 0, lastT: 0,
+        v: 0, acc: 0, raf: 0,
+        pressTimer: 0, selRaf: 0, lastAuto: 0,
+        anchorS: 0, anchorE: 0, blockMouseUntil: 0
+      };
+
+      function screenRect() {
         const screen = container.querySelector('.xterm-screen');
-        const h = screen ? screen.clientHeight : 0;
-        return (h && term.rows) ? h / term.rows : 17;
+        return screen ? screen.getBoundingClientRect() : container.getBoundingClientRect();
       }
 
+      function lineHeight() {
+        const r = screenRect();
+        return (r.height && term.rows) ? r.height / term.rows : 17;
+      }
+
+      // ── scroll ──
       function scrollByPixels(dy) {
         st.acc += -dy / lineHeight();
         const n = Math.trunc(st.acc);
@@ -289,26 +379,105 @@
         if (st.raf) { cancelAnimationFrame(st.raf); st.raf = 0; }
       }
 
+      // ── seleksi ──
+      function cellAt(x, y) {
+        const r = screenRect();
+        const cw = r.width / term.cols;
+        const ch = r.height / term.rows;
+        const col = Math.min(term.cols - 1, Math.max(0, Math.floor((x - r.left) / cw)));
+        const row = Math.min(term.rows - 1, Math.max(0, Math.floor((y - r.top) / ch)));
+        return { col, row: row + term.buffer.active.viewportY };
+      }
+
+      function linOf(cell) { return cell.row * term.cols + cell.col; }
+
+      // Kata = deretan karakter non-spasi (cocok untuk path, URL, perintah)
+      function wordBounds(cell) {
+        const lin = linOf(cell);
+        const line = term.buffer.active.getLine(cell.row);
+        if (!line) return { s: lin, e: lin };
+        const text = line.translateToString(false);
+        const isSp = (i) => { const ch = text[i]; return !ch || ch === ' '; };
+        if (isSp(cell.col)) return { s: lin, e: lin };
+        let a = cell.col, b = cell.col;
+        while (a > 0 && !isSp(a - 1)) a--;
+        while (b < text.length - 1 && !isSp(b + 1)) b++;
+        return { s: cell.row * term.cols + a, e: cell.row * term.cols + b };
+      }
+
+      function applySelection() {
+        const c = linOf(cellAt(st.curX, st.curY));
+        let s, e;
+        if (c >= st.anchorS) { s = st.anchorS; e = Math.max(c, st.anchorE); }
+        else { s = c; e = st.anchorE; }
+        term.select(s % term.cols, Math.floor(s / term.cols), e - s + 1);
+      }
+
+      // Auto-scroll kalau jari dekat tepi atas/bawah saat memilih (untuk output panjang)
+      function selTick(now) {
+        if (!st.selecting) { st.selRaf = 0; return; }
+        const r = container.getBoundingClientRect();
+        let dir = 0;
+        if (st.curY < r.top + EDGE) dir = -1;
+        else if (st.curY > r.bottom - EDGE) dir = 1;
+        if (dir && now - st.lastAuto > 60) {
+          st.lastAuto = now;
+          term.scrollLines(dir);
+          applySelection();
+        }
+        st.selRaf = requestAnimationFrame(selTick);
+      }
+
+      function cancelPress() {
+        if (st.pressTimer) { clearTimeout(st.pressTimer); st.pressTimer = 0; }
+      }
+
+      function beginSelect() {
+        st.pressTimer = 0;
+        if (!st.active || st.moved) return;
+        st.selecting = true;
+        const w = wordBounds(cellAt(st.curX, st.curY));
+        st.anchorS = w.s;
+        st.anchorE = w.e;
+        applySelection();
+        if (navigator.vibrate) navigator.vibrate(15);
+        st.selRaf = requestAnimationFrame(selTick);
+      }
+
+      // ── event sentuh ──
       function onStart(e) {
-        if (e.touches.length !== 1) { st.active = false; return; }
+        if (e.touches.length !== 1) { cancelPress(); st.active = false; return; }
         e.stopPropagation();
         stopFling();
         const t = e.touches[0];
         st.active = true;
         st.moved = false;
-        st.startY = st.lastY = t.clientY;
+        st.selecting = false;
+        st.startX = st.curX = t.clientX;
+        st.startY = st.lastY = st.curY = t.clientY;
         st.lastT = performance.now();
         st.v = 0;
         st.acc = 0;
+        cancelPress();
+        st.pressTimer = setTimeout(beginSelect, LONG_PRESS_MS);
       }
 
       function onMove(e) {
         if (!st.active) return;
-        if (e.touches.length !== 1) { st.active = false; return; }
+        if (e.touches.length !== 1) { cancelPress(); st.active = false; return; }
         e.stopPropagation();
         e.preventDefault();
         const t = e.touches[0];
-        if (!st.moved && Math.abs(t.clientY - st.startY) < 6) return; // masih dianggap tap
+        st.curX = t.clientX;
+        st.curY = t.clientY;
+
+        if (st.selecting) { applySelection(); return; }
+
+        if (!st.moved &&
+            Math.abs(t.clientY - st.startY) < SLOP &&
+            Math.abs(t.clientX - st.startX) < SLOP) return; // masih tap/tahan
+
+        cancelPress();
         st.moved = true;
         const now = performance.now();
         const dy = t.clientY - st.lastY;
@@ -322,8 +491,23 @@
       function onEnd(e) {
         if (!st.active) return;
         e.stopPropagation();
+        cancelPress();
         st.active = false;
-        if (!st.moved) return;
+
+        if (st.selecting) {
+          st.selecting = false;
+          if (st.selRaf) { cancelAnimationFrame(st.selRaf); st.selRaf = 0; }
+          // Cegah event mouse "susulan" dari browser menghapus seleksi
+          st.blockMouseUntil = performance.now() + 700;
+          return;
+        }
+
+        if (!st.moved) {
+          // Tap biasa: hapus seleksi kalau ada
+          if (term.hasSelection()) term.clearSelection();
+          return;
+        }
+
         if (performance.now() - st.lastT > 80) return; // jari berhenti dulu → tanpa fling
         let last = performance.now();
         const tick = (now) => {
@@ -336,21 +520,38 @@
         st.raf = requestAnimationFrame(tick);
       }
 
-      // Tap biasa = munculkan keyboard
-      const onClick = () => term.focus();
+      // Event mouse sintetis setelah tahan-lama tidak boleh sampai ke xterm
+      const guard = (e) => {
+        if (performance.now() < st.blockMouseUntil) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      };
+      const onCtx = (e) => e.preventDefault();       // matikan menu tahan-lama bawaan Android
+      const onClick = () => {                        // tap = munculkan keyboard
+        if (performance.now() < st.blockMouseUntil) return;
+        term.focus();
+      };
 
+      const cap = { capture: true };
       container.addEventListener('touchstart', onStart, { capture: true, passive: true });
       container.addEventListener('touchmove', onMove, { capture: true, passive: false });
       container.addEventListener('touchend', onEnd, { capture: true, passive: true });
       container.addEventListener('touchcancel', onEnd, { capture: true, passive: true });
+      ['mousedown', 'mouseup', 'click'].forEach(t => container.addEventListener(t, guard, cap));
+      container.addEventListener('contextmenu', onCtx);
       container.addEventListener('click', onClick);
 
       return () => {
         stopFling();
-        container.removeEventListener('touchstart', onStart, { capture: true });
-        container.removeEventListener('touchmove', onMove, { capture: true });
-        container.removeEventListener('touchend', onEnd, { capture: true });
-        container.removeEventListener('touchcancel', onEnd, { capture: true });
+        cancelPress();
+        if (st.selRaf) { cancelAnimationFrame(st.selRaf); st.selRaf = 0; }
+        container.removeEventListener('touchstart', onStart, cap);
+        container.removeEventListener('touchmove', onMove, cap);
+        container.removeEventListener('touchend', onEnd, cap);
+        container.removeEventListener('touchcancel', onEnd, cap);
+        ['mousedown', 'mouseup', 'click'].forEach(t => container.removeEventListener(t, guard, cap));
+        container.removeEventListener('contextmenu', onCtx);
         container.removeEventListener('click', onClick);
       };
     }
@@ -458,6 +659,7 @@
           foreground: '#c0caf5',
           cursor: '#c0caf5',
           selectionBackground: '#33467c',
+          selectionInactiveBackground: '#33467c',
           black: '#15161e', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
           blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
           brightBlack: '#414868', brightRed: '#f7768e', brightGreen: '#9ece6a',
@@ -475,8 +677,14 @@
       currentTerm.open(container);
       fitAddon.fit();
 
-      // Scroll sentuh + tap-to-focus
+      // Scroll sentuh + pilih teks + tap-to-focus
       detachTouch = attachTouchScroll(currentTerm, container);
+
+      // Tombol Copy menyala kalau ada teks terpilih
+      currentTerm.onSelectionChange(() => {
+        const b = document.getElementById('copy-key');
+        if (b && currentTerm) b.classList.toggle('active', currentTerm.hasSelection());
+      });
 
       // Setiap ukuran area terminal berubah (keyboard, toolbar, rotasi) → fit ulang
       resizeObserver = new ResizeObserver(() => scheduleFit());
@@ -545,6 +753,8 @@
       if (currentTerm) { currentTerm.dispose(); currentTerm = null; }
       fitAddon = null;
       setCtrlArmed(false);
+      const cb = document.getElementById('copy-key');
+      if (cb) cb.classList.remove('active');
     }
 
     function backToList() {
