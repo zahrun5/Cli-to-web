@@ -240,7 +240,10 @@ WantedBy=multi-user.target
 SVCFILE
 
   sudo systemctl daemon-reload
-  sudo systemctl enable --now ${SERVICE_NAME}.service
+  sudo systemctl enable ${SERVICE_NAME}.service
+  sudo systemctl stop ${SERVICE_NAME}.service 2>/dev/null || true
+  sleep 1
+  sudo systemctl start ${SERVICE_NAME}.service
 
   sleep 2
   if systemctl is-active --quiet ${SERVICE_NAME}.service; then
