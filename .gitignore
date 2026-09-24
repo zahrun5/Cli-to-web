@@ -20,3 +20,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+relay-server/data/
+*.bak
+*.oauth-broken

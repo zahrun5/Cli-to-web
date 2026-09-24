@@ -19,12 +19,15 @@ const crypto = require('crypto');
 const { WebSocketServer, WebSocket } = require('ws');
 const bcrypt = require('bcryptjs');
 
+const db = require('./db');
+
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 3100;
 const RELAY_SECRET = process.env.RELAY_SECRET || 'change-me';
 const WEB_USER = process.env.WEB_USER || 'admin';
 const WEB_PASS_HASH = process.env.WEB_PASS_HASH || '';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const APP_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 
 // ── State ───────────────────────────────────────────────────────────
 // agents: Map<agentId, { ws, name, connectedAt, terminalSessions: Map<sessionId, browserWs> }>
@@ -39,15 +42,21 @@ const RATE_LIMIT_MAX = 5;           // max attempts per window
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/** Verify agent token: token = agentId:hmac(agentId, RELAY_SECRET) */
+/** Verify agent token: check HMAC + DB lookup */
 function verifyAgentToken(token) {
   const parts = token.split(':');
   if (parts.length !== 2) return null;
   const [agentId, sig] = parts;
   const expected = crypto.createHmac('sha256', RELAY_SECRET).update(agentId).digest('hex');
   if (sig.length !== expected.length) return null;
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-  return agentId;
+  try { if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null; }
+  catch { return null; }
+  // Check DB — token must be registered
+  const row = db.getAgentToken(agentId);
+  if (!row) return null;
+  const th = crypto.createHash('sha256').update(token).digest('hex');
+  if (row.token_hash !== th) return null;
+  return row;  // returns { id, user_id, agent_id, name, token_hash, created_at }
 }
 
 /** Generate a new agent token */
@@ -178,6 +187,85 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/servers ─────────────────────────────────────────────
+  // List all registered servers (from DB) with online status
+  if (req.method === 'GET' && url.pathname === '/api/servers') {
+    if (!validateSession(req.headers.cookie)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+    // For single-user mode, get all servers (user_id=1 fallback)
+    const rows = db.listAllAgents();
+    const list = rows.map(r => ({
+      agentId: r.agent_id,
+      name: r.name,
+      createdAt: r.created_at,
+      online: agents.has(r.agent_id),
+    }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ servers: list }));
+    return;
+  }
+
+  // ── POST /api/servers ───────────────────────────────────────────
+  // Create a new server token
+  if (req.method === 'POST' && url.pathname === '/api/servers') {
+    if (!validateSession(req.headers.cookie)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+    try {
+      const body = JSON.parse(await readBody(req));
+      const name = (body.name || '').trim().slice(0, 64);
+      if (!name) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Name is required' }));
+        return;
+      }
+      const safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+      const agentId = `${safeName}-${crypto.randomBytes(4).toString('hex')}`;
+      const token = generateAgentToken(agentId);
+      const tokenHashVal = crypto.createHash('sha256').update(token).digest('hex');
+      // Use user_id=1 for single-user mode
+      db.createAgentToken({ userId: 1, agentId, name, tokenHash: tokenHashVal });
+      const installCmd = `curl -sSL ${APP_URL}/install.sh | bash -s -- ${token}`;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ agentId, token, name, installCmd }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Bad request' }));
+    }
+    return;
+  }
+
+  // ── DELETE /api/servers/<agentId> ───────────────────────────────
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/servers/')) {
+    if (!validateSession(req.headers.cookie)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
+    const agentId = url.pathname.split('/api/servers/')[1];
+    if (!agentId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Agent ID required' }));
+      return;
+    }
+    // Remove from DB
+    db.deleteAgentTokenById(agentId);
+    // Kick agent if connected
+    const agent = agents.get(agentId);
+    if (agent) {
+      agent.ws.close(4003, 'Token revoked');
+      agents.delete(agentId);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // ── GET /api/generate-token?name=<name> ───────────────────────
   // Utility: generate a new agent token (admin only)
   if (req.method === 'GET' && url.pathname === '/api/generate-token') {
@@ -221,14 +309,14 @@ server.on('upgrade', (req, socket, head) => {
   if (url.pathname === '/ws/agent') {
     const token = url.searchParams.get('token');
     if (!token) { socket.destroy(); return; }
-    const agentId = verifyAgentToken(token);
-    if (!agentId) {
+    const agentRow = verifyAgentToken(token);
+    if (!agentRow) {
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
-      handleAgentConnection(ws, agentId);
+      handleAgentConnection(ws, agentRow.agent_id, agentRow.name);
     });
     return;
   }
@@ -256,15 +344,12 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 // ── Agent WebSocket Handler ─────────────────────────────────────────
-function handleAgentConnection(ws, agentId) {
-  // Extract name from agentId (format: name-hexhexhex)
-  const name = agentId.replace(/-[a-f0-9]{8}$/, '');
-
-  console.log(`[AGENT] Connected: ${agentId} (${name})`);
+function handleAgentConnection(ws, agentId, agentName) {
+  console.log(`[AGENT] Connected: ${agentId} (${agentName})`);
 
   const agent = {
     ws,
-    name,
+    name: agentName,
     agentId,
     connectedAt: new Date().toISOString(),
     terminalSessions: new Map()
