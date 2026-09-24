@@ -636,11 +636,18 @@
           cols: term.cols,
           rows: term.rows
         }));
+        // Heartbeat setiap 25 detik supaya Cloudflare tidak putus koneksi idle
+        ws._heartbeat = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 25000);
       };
 
       ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(evt.data);
+          if (msg.type === 'pong') return; // heartbeat response, ignore
           if (msg.type === 'output') {
             termWrite(msg.data);
           } else if (msg.type === 'exit') {
@@ -652,6 +659,7 @@
       };
 
       ws.onclose = () => {
+        if (ws._heartbeat) clearInterval(ws._heartbeat);
         term.writeln('\r\n\x1b[33m● Connection closed\x1b[0m');
       };
 

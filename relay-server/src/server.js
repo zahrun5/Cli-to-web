@@ -419,9 +419,14 @@ function handleBrowserConnection(ws, agentId) {
 
   ws.on('message', (data) => {
     // Browser sends keystrokes → forward to agent
-    if (agent.ws.readyState === WebSocket.OPEN) {
-      try {
-        const msg = JSON.parse(data);
+    try {
+      const msg = JSON.parse(data);
+      // Heartbeat ping from browser — respond with pong, don't forward
+      if (msg.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
+        return;
+      }
+      if (agent.ws.readyState === WebSocket.OPEN) {
         agent.ws.send(JSON.stringify({
           sessionId,
           type: msg.type,   // 'input' or 'resize'
@@ -429,8 +434,10 @@ function handleBrowserConnection(ws, agentId) {
           cols: msg.cols,
           rows: msg.rows
         }));
-      } catch {
-        // Raw text fallback
+      }
+    } catch {
+      // Raw text fallback
+      if (agent.ws.readyState === WebSocket.OPEN) {
         agent.ws.send(JSON.stringify({
           sessionId,
           type: 'input',
